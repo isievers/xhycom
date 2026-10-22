@@ -4,7 +4,6 @@ __pycache__/
 dist/
 build/
 .eggs/
-test_xhycom/
 *.egg
 .pytest_cache/
 .coverage
