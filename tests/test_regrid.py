@@ -7,6 +7,7 @@ import xarray as xr
 import xhycom
 from xhycom._regrid import (
     _ONEM,
+    _apply_target_mask,
     _uv_to_east_north,
     layer_centre_depth,
     layer_interface_depth,
@@ -533,6 +534,215 @@ def test_regrid_wrapper_conservative_end_to_end(order):
     assert set(out["temp"].dims) == {"depth", "lat", "lon"}
     v = out["temp"].values
     np.testing.assert_allclose(v[np.isfinite(v)], 6.0, atol=1e-6)
+
+
+def test_regrid_horizontal_target_dims_match_target_grid():
+    """Output dims should use the target's coord names (latitude/longitude for GLORYS-style targets)."""
+    pytest.importorskip("xesmf")
+    grid, lon2d, lat2d = _curvilinear_grid()
+    ny, nx = lat2d.shape
+    ds = xr.Dataset(
+        {"temp": xr.DataArray(np.full((ny, nx), 5.0), dims=("y", "x"))}
+    ).assign_coords(lon=(("y", "x"), lon2d), lat=(("y", "x"), lat2d))
+    tgt_lon = np.linspace(2, 8, 9)
+    tgt_lat = np.linspace(42, 48, 9)
+    target = xr.Dataset(
+        {
+            "longitude": ("longitude", tgt_lon),
+            "latitude": ("latitude", tgt_lat),
+        }
+    )
+    out = xhycom.regrid_horizontal(ds, target=target, grid=grid, method="bilinear")
+    assert "latitude" in out.dims and "longitude" in out.dims
+    assert "lat" not in out.dims and "lon" not in out.dims
+
+
+def test_apply_target_mask_derived_from_data_vars():
+    """_apply_target_mask uses data-variable NaN pattern when no explicit mask is present."""
+    lat = np.array([0.0, 1.0])
+    lon = np.array([0.0, 1.0])
+    depth = np.array([10.0, 50.0, 200.0])
+    # Target has NaN at depth=200 m everywhere (shallow bathymetry) and at
+    # lat=0,lon=0 at all depths (land cell) — no 'mask' variable.
+    thetao = np.ones((3, 2, 2))
+    thetao[2, :, :] = np.nan  # below seafloor at 200 m
+    thetao[:, 0, 0] = np.nan  # land cell
+    tgt = xr.Dataset(
+        {"thetao": (("depth", "lat", "lon"), thetao)},
+        coords={"depth": depth, "lat": lat, "lon": lon},
+    )
+    # out: same grid, all finite
+    out_data = np.ones((3, 2, 2))
+    out = xr.Dataset(
+        {"temp": (("depth", "lat", "lon"), out_data)},
+        coords={"depth": depth, "lat": lat, "lon": lon},
+    )
+    masked = _apply_target_mask(out, tgt, surface_only=False)
+    assert np.isnan(masked["temp"].sel(depth=200.0).values).all(), (
+        "below seafloor not masked"
+    )
+    assert np.isnan(masked["temp"].sel(lat=0.0, lon=0.0).values).all(), (
+        "land cell not masked"
+    )
+    assert np.isfinite(masked["temp"].sel(lat=1.0, lon=1.0, depth=10.0).item()), (
+        "ocean cell wrongly masked"
+    )
+
+
+def test_apply_target_mask_prefers_3d_variable():
+    """_apply_target_mask picks a depth-carrying variable over a 2D one (e.g. zos)."""
+    lat = np.array([0.0, 1.0])
+    lon = np.array([0.0, 1.0])
+    depth = np.array([10.0, 200.0])
+    # zos: 2D, fully finite — no bathymetry info
+    zos = np.ones((2, 2))
+    # thetao: 3D, NaN at depth=200 m (below seafloor)
+    thetao = np.ones((2, 2, 2))
+    thetao[1, :, :] = np.nan  # below seafloor at 200 m
+    tgt = xr.Dataset(
+        {
+            "zos": (("lat", "lon"), zos),
+            "thetao": (("depth", "lat", "lon"), thetao),
+        },
+        coords={"depth": depth, "lat": lat, "lon": lon},
+    )
+    out_data = np.ones((2, 2, 2))
+    out = xr.Dataset(
+        {"temp": (("depth", "lat", "lon"), out_data)},
+        coords={"depth": depth, "lat": lat, "lon": lon},
+    )
+    masked = _apply_target_mask(out, tgt, surface_only=False)
+    assert np.isnan(masked["temp"].sel(depth=200.0).values).all(), (
+        "below seafloor not masked"
+    )
+    assert np.isfinite(masked["temp"].sel(depth=10.0).values).all(), (
+        "surface wrongly masked"
+    )
+
+
+def test_apply_target_mask_surface_only_derived():
+    """_apply_target_mask surface_only=True takes depth=0 of derived mask."""
+    lat = np.array([0.0, 1.0])
+    lon = np.array([0.0, 1.0])
+    depth = np.array([10.0, 50.0])
+    thetao = np.ones((2, 2, 2))
+    thetao[:, 0, 0] = np.nan  # land cell at all depths
+    tgt = xr.Dataset(
+        {"thetao": (("depth", "lat", "lon"), thetao)},
+        coords={"depth": depth, "lat": lat, "lon": lon},
+    )
+    # out: has a layer (k) dimension, not depth
+    out_data = np.ones((2, 2, 2))
+    out = xr.Dataset(
+        {"temp": (("k", "lat", "lon"), out_data)},
+        coords={"lat": lat, "lon": lon},
+    )
+    masked = _apply_target_mask(out, tgt, surface_only=True)
+    assert np.isnan(masked["temp"].sel(lat=0.0, lon=0.0).values).all(), (
+        "land cell not masked"
+    )
+    assert np.isfinite(masked["temp"].sel(lat=1.0, lon=1.0).values).all(), (
+        "ocean cell wrongly masked"
+    )
+
+
+def _curvilinear_target(ny: int = 8, nx: int = 8):
+    """A small synthetic curvilinear (2-D lon/lat) target grid.
+
+    Mimics the structure of a TOPAZ5 stereographic output: dims are ``y`` and
+    ``x`` (1-D projected coordinates), and ``longitude`` / ``latitude`` are
+    2-D non-index coordinates carrying the geographic position of each cell.
+    """
+    x1d = np.linspace(2.0, 8.0, nx)
+    y1d = np.linspace(42.0, 48.0, ny)
+    lon2d, lat2d = np.meshgrid(x1d, y1d)
+    depth = np.array([5.0, 50.0, 200.0])
+    return xr.Dataset(
+        {"thetao": (("depth", "y", "x"), np.ones((len(depth), ny, nx)))},
+        coords={
+            "y": y1d,
+            "x": x1d,
+            "latitude": (("y", "x"), lat2d),
+            "longitude": (("y", "x"), lon2d),
+            "depth": depth,
+        },
+    )
+
+
+@pytest.fixture
+def tp5_stereo(tmp_path):
+    """Small stereographic fixture from tests/data/tp5_stereo_subset.nc."""
+    import os
+
+    path = os.path.join(os.path.dirname(__file__), "data", "tp5_stereo_subset.nc")
+    if not os.path.exists(path):
+        pytest.skip(
+            "tp5_stereo_subset.nc not found — regenerate with _subset_tp5_stereo.py"
+        )
+    return xr.open_dataset(path)
+
+
+# ---------------------------------------------------------------------------
+# Curvilinear target tests
+# ---------------------------------------------------------------------------
+def test_subset_target_skips_curvilinear():
+    """_subset_target returns the target unchanged for a 2-D curvilinear grid."""
+    from xhycom._regrid import _subset_target
+
+    ds = _curvilinear_ds()  # source lon 0..10, lat 40..50
+    tgt = _curvilinear_target()
+    result = _subset_target(tgt, ds)
+    assert result is tgt
+
+
+def test_regrid_horizontal_curvilinear_target_recovers_field():
+    """Bilinear regrid to a curvilinear (2-D lon/lat) target recovers a constant field."""
+    pytest.importorskip("xesmf")
+    ds = _curvilinear_ds()  # source lon 0..10, lat 40..50, temp = lat
+    tgt = _curvilinear_target()  # target lon 2..8, lat 42..48 — fully inside source
+    out = xhycom.regrid_horizontal(ds, target=tgt, method="bilinear")
+    # Dims must be y/x (from the target), not lat/lon.
+    assert "y" in out.dims and "x" in out.dims
+    assert "lat" not in out.dims and "lon" not in out.dims
+    # Geographic coords must be attached with the target's names.
+    assert "latitude" in out.coords and "longitude" in out.coords
+    assert out["latitude"].dims == ("y", "x")
+    # temp == lat everywhere; bilinear must recover latitude at interior points.
+    np.testing.assert_allclose(
+        out["temp"].isel(k=0).values,
+        out["latitude"].values,
+        atol=5e-3,
+    )
+
+
+def test_regrid_horizontal_curvilinear_target_yx_coords_attached():
+    """y/x index coordinates from the target are preserved on the output."""
+    pytest.importorskip("xesmf")
+    ds = _curvilinear_ds()
+    tgt = _curvilinear_target()
+    out = xhycom.regrid_horizontal(ds, target=tgt, method="bilinear")
+    assert "y" in out.coords and "x" in out.coords
+    np.testing.assert_array_equal(out["y"].values, tgt["y"].values)
+    np.testing.assert_array_equal(out["x"].values, tgt["x"].values)
+
+
+def test_regrid_horizontal_curvilinear_conservative_warns():
+    """Requesting conservative for a curvilinear target warns and falls back to bilinear."""
+    pytest.importorskip("xesmf")
+    ds = _curvilinear_ds()
+    tgt = _curvilinear_target()
+    with pytest.warns(UserWarning, match="curvilinear"):
+        out = xhycom.regrid_horizontal(ds, target=tgt, method="conservative")
+    assert "y" in out.dims  # bilinear fallback produced output
+
+
+def test_regrid_horizontal_tp5_stereo_fixture(tp5_stereo):
+    """Regridding to the bundled TP5 stereographic fixture does not raise."""
+    pytest.importorskip("xesmf")
+    ds = _curvilinear_ds()
+    out = xhycom.regrid_horizontal(ds, target=tp5_stereo, method="bilinear")
+    assert "y" in out.dims and "x" in out.dims
+    assert "latitude" in out.coords and "longitude" in out.coords
 
 
 def test_regrid_invalid_order():

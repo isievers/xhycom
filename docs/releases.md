@@ -6,11 +6,25 @@
 
 ### ✨ New Features
 
+* Option to compute in/outflow for transports ([#22](https://github.com/nansencenter/xhycom/pull/22))
+
 ### 🐛 Bug Fixes
+
+* Fix transport and regrid for non-lat/lon grids (e.g. stereographic) ([#21](https://github.com/nansencenter/xhycom/pull/21))
 
 ### 📚 Documentation
 
+* Add conda and PyPI badges to README ([#20](https://github.com/nansencenter/xhycom/pull/20))
+
 ### 🔧 Internal
+
+* Clean up dependencies ([#27](https://github.com/nansencenter/xhycom/pull/27))
+
+## v0.2.0 (August 13, 2026)
+
+### ✨ New Features
+
+* Transport calculations and cross-section plots ([#10](https://github.com/nansencenter/xhycom/pull/10))
 
 ## v0.1.1 (August 3, 2026)
 

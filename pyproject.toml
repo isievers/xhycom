@@ -13,7 +13,10 @@ requires-python = ">=3.8"
 dependencies = [
     "numpy",
     "xarray",
+    "scipy",
     "cftime",
+    "matplotlib",
+    "nc-time-axis",  # matplotlib cftime axis support for plotting HYCOM time coords
     "dask",
     "xgcm>=0.10.1",
     "numba",   # required by xgcm's Grid.transform for method="conservative"
