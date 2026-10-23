@@ -20,6 +20,7 @@
 ### 🔧 Internal
 
 * Clean up dependencies ([#27](https://github.com/nansencenter/xhycom/pull/27))
+* Require Python >=3.10 ([#30](https://github.com/nansencenter/xhycom/pull/30))
 
 ## v0.2.0 (August 13, 2026)
 

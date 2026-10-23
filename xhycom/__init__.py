@@ -9,7 +9,7 @@ open_mfdataset(paths, ...)    Open a time series of archive snapshots.
 from __future__ import annotations
 
 import warnings
-from typing import Iterable, Union
+from collections.abc import Iterable
 
 import xarray as xr
 
@@ -71,9 +71,9 @@ __all__ = [
 ]
 
 # A grid argument is either a path to ``regional.grid`` or a pre-loaded Dataset.
-GridArg = Union[str, xr.Dataset, None]
+GridArg = str | xr.Dataset | None
 # ``chunks`` is forwarded to ``Dataset.chunk`` (int, mapping, "auto", or None).
-Chunks = Union[int, dict, str, None]
+Chunks = int | dict | str | None
 
 # Layer-velocity names and their barotropic partners.  ``postprocess`` turns the
 # baroclinic ``archv`` velocities into the total current by adding the barotropic
